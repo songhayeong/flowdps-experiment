@@ -1,4 +1,6 @@
 import argparse
+import json
+from typing import Union
 from pathlib import Path
 from typing import List
 
@@ -12,6 +14,12 @@ from torchvision import transforms
 from util import set_seed, get_img_list, process_text
 from sd3_sampler import get_solver
 from functions.degradation import get_degradation
+
+def _flatten_measurement(measurement: Union[torch.Tensor, tuple]) -> torch.Tensor:
+    if isinstance(measurement, tuple):
+        parts = [m.reshape(-1) for m in measurement]
+        return torch.cat(parts, dim=0)
+    return measurement.reshape(-1)
 
 @torch.no_grad
 def precompute(args, prompts:List[str], solver) -> List[torch.Tensor]:
@@ -76,6 +84,7 @@ def run(args):
         ])
 
     pbar = tqdm(get_img_list(args.img_path), desc="Solving")
+    residuals = []
     for i, path in enumerate(pbar):
         img = tf(Image.open(path).convert('RGB'))
         img = img.unsqueeze(0).to(solver.vae.device)
@@ -106,8 +115,16 @@ def run(args):
                    args.workdir.joinpath(f'label/{str(i).zfill(4)}.png'),
                    normalize=True)
 
+        # Measurement residual for analysis: ||A(x_hat) - y||_2.
+        y_hat = operator.A(out)
+        residual = torch.linalg.vector_norm(_flatten_measurement(y_hat - y)).item()
+        residuals.append({"image": f"{str(i).zfill(4)}.png", "residual_l2": residual})
+
         if (i+1) == args.num_samples:
             break
+
+    with args.workdir.joinpath("residuals.json").open("w") as f:
+        json.dump(residuals, f, indent=2)
 
 
 if __name__ == "__main__":
@@ -147,4 +164,3 @@ if __name__ == "__main__":
 
     # run main script
     run(args)
-
