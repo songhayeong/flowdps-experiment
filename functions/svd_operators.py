@@ -99,10 +99,13 @@ class CS(A_functions):
         self.channels = channels
         self.y_dim = img_dim // 32
         self.ratio = 32
+        if (32 * 32) % ratio != 0:
+            raise ValueError(f"Block CS ratio must divide 32*32, got {ratio}")
         A = torch.randn(32**2, 32**2).to(device)
         _, _, self.V_small = torch.svd(A, some=False)
         self.Vt_small = self.V_small.transpose(0, 1)
-        self.singulars_small = torch.ones(int(32 * 32 * ratio), device=device)
+        # ratio is compression factor: keep 32*32 / ratio measurements per block
+        self.singulars_small = torch.ones(int(32 * 32 // ratio), device=device)
         self.cs_size = self.singulars_small.size(0)
 
     def V(self, vec):
@@ -116,7 +119,8 @@ class CS(A_functions):
             vec.size(0), self.channels * self.y_dim ** 2, -1)
 
         #multiply each patch by the small V
-        patches = torch.matmul(self.V_small, patches.reshape(-1, self.ratio**2, 1)).reshape(vec.shape[0], self.channels, -1, self.ratio**2)
+        v_small = self.V_small.to(dtype=patches.dtype, device=patches.device)
+        patches = torch.matmul(v_small, patches.reshape(-1, self.ratio**2, 1)).reshape(vec.shape[0], self.channels, -1, self.ratio**2)
         #repatch the patches into an image
         patches_orig = patches.reshape(vec.shape[0], self.channels, self.y_dim, self.y_dim, self.ratio, self.ratio)
         recon = patches_orig.permute(0, 1, 2, 4, 3, 5).contiguous()
@@ -129,7 +133,8 @@ class CS(A_functions):
         patches = patches.unfold(2, self.ratio, self.ratio).unfold(3, self.ratio, self.ratio)
         patches = patches.contiguous().reshape(vec.shape[0], self.channels, -1, self.ratio**2)
         #multiply each by the small V transposed
-        patches = torch.matmul(self.Vt_small, patches.reshape(-1, self.ratio**2, 1)).reshape(vec.shape[0], self.channels, -1, self.ratio**2)
+        vts = self.Vt_small.to(dtype=patches.dtype, device=patches.device)
+        patches = torch.matmul(vts, patches.reshape(-1, self.ratio**2, 1)).reshape(vec.shape[0], self.channels, -1, self.ratio**2)
         #reorder the vector to have the first entry first (because singulars are ordered descendingly)
         recon = torch.zeros(vec.shape[0], self.channels * self.img_dim**2, device=vec.device)
         recon[:, :self.channels * self.y_dim ** 2 * self.cs_size] = patches[:, :, :, :self.cs_size].contiguous().reshape(
@@ -490,7 +495,8 @@ class SuperResolution(A_functions):
         for idx in range(self.ratio**2-1):
             patches[:, :, :, idx+1] = temp[:, (self.channels*self.y_dim**2+idx)::self.ratio**2-1].view(vec.shape[0], self.channels, -1)
         #multiply each patch by the small V
-        patches = torch.matmul(self.V_small, patches.reshape(-1, self.ratio**2, 1)).reshape(vec.shape[0], self.channels, -1, self.ratio**2)
+        v_small = self.V_small.to(dtype=patches.dtype, device=patches.device)
+        patches = torch.matmul(v_small, patches.reshape(-1, self.ratio**2, 1)).reshape(vec.shape[0], self.channels, -1, self.ratio**2)
         #repatch the patches into an image
         patches_orig = patches.reshape(vec.shape[0], self.channels, self.y_dim, self.y_dim, self.ratio, self.ratio)
         recon = patches_orig.permute(0, 1, 2, 4, 3, 5).contiguous()
@@ -504,7 +510,8 @@ class SuperResolution(A_functions):
         unfold_shape = patches.shape
         patches = patches.contiguous().reshape(vec.shape[0], self.channels, -1, self.ratio**2)
         #multiply each by the small V transposed
-        patches = torch.matmul(self.Vt_small, patches.reshape(-1, self.ratio**2, 1)).reshape(vec.shape[0], self.channels, -1, self.ratio**2)
+        vts = self.Vt_small.to(dtype=patches.dtype, device=patches.device)
+        patches = torch.matmul(vts, patches.reshape(-1, self.ratio**2, 1)).reshape(vec.shape[0], self.channels, -1, self.ratio**2)
         #reorder the vector to have the first entry first (because singulars are ordered descendingly)
         recon = torch.zeros(vec.shape[0], self.channels * self.img_dim**2, device=vec.device)
         recon[:, :self.channels * self.y_dim**2] = patches[:, :, :, 0].view(vec.shape[0], self.channels * self.y_dim**2)
@@ -603,13 +610,14 @@ class SuperResolution(A_functions):
         patches_vec = patches_vec * d1_t
         patches_eps = patches_eps * d2_t
 
-        patches_vec = torch.matmul(self.V_small, patches_vec.reshape(-1, self.ratio**2, 1))
+        v_small = self.V_small.to(dtype=patches_vec.dtype, device=patches_vec.device)
+        patches_vec = torch.matmul(v_small, patches_vec.reshape(-1, self.ratio**2, 1))
 
         patches_vec = patches_vec.reshape(vec.shape[0], self.channels, self.y_dim, self.y_dim, self.ratio, self.ratio)
         patches_vec = patches_vec.permute(0, 1, 2, 4, 3, 5).contiguous()
         patches_vec = patches_vec.reshape(vec.shape[0], self.channels * self.img_dim ** 2)
 
-        patches_eps = torch.matmul(self.V_small, patches_eps.reshape(-1, self.ratio**2, 1))
+        patches_eps = torch.matmul(v_small, patches_eps.reshape(-1, self.ratio**2, 1))
 
         patches_eps = patches_eps.reshape(vec.shape[0], self.channels, self.y_dim, self.y_dim, self.ratio, self.ratio)
         patches_eps = patches_eps.permute(0, 1, 2, 4, 3, 5).contiguous()
@@ -779,7 +787,8 @@ class Colorization(A_functions):
         #get the needles
         needles = vec.clone().reshape(vec.shape[0], self.channels, -1).permute(0, 2, 1) #shape: B, WA, C'
         #multiply each needle by the small V
-        needles = torch.matmul(self.V_small, needles.reshape(-1, self.channels, 1)).reshape(vec.shape[0], -1, self.channels) #shape: B, WA, C
+        v_small = self.V_small.to(dtype=needles.dtype, device=needles.device)
+        needles = torch.matmul(v_small, needles.reshape(-1, self.channels, 1)).reshape(vec.shape[0], -1, self.channels) #shape: B, WA, C
         #permute back to vector representation
         recon = needles.permute(0, 2, 1) #shape: B, C, WA
         return recon.reshape(vec.shape[0], -1)
@@ -788,7 +797,8 @@ class Colorization(A_functions):
         #get the needles
         needles = vec.clone().reshape(vec.shape[0], self.channels, -1).permute(0, 2, 1) #shape: B, WA, C
         #multiply each needle by the small V transposed
-        needles = torch.matmul(self.Vt_small, needles.reshape(-1, self.channels, 1)).reshape(vec.shape[0], -1, self.channels) #shape: B, WA, C'
+        vts = self.Vt_small.to(dtype=needles.dtype, device=needles.device)
+        needles = torch.matmul(vts, needles.reshape(-1, self.channels, 1)).reshape(vec.shape[0], -1, self.channels) #shape: B, WA, C'
         #reorder the vector so that the first entry of each needle is at the top
         recon = needles.permute(0, 2, 1).reshape(vec.shape[0], -1)
         return recon
@@ -811,7 +821,8 @@ class Colorization(A_functions):
     def Lambda(self, vec, a, sigma_y, sigma_t, eta):
         needles = vec.clone().reshape(vec.shape[0], self.channels, -1).permute(0, 2, 1)
 
-        needles = torch.matmul(self.Vt_small, needles.reshape(-1, self.channels, 1)).reshape(vec.shape[0], -1, self.channels)
+        vts = self.Vt_small.to(dtype=needles.dtype, device=needles.device)
+        needles = torch.matmul(vts, needles.reshape(-1, self.channels, 1)).reshape(vec.shape[0], -1, self.channels)
 
         singulars = self.singulars_small
         lambda_t = torch.ones(self.channels, device=vec.device)
@@ -829,7 +840,8 @@ class Colorization(A_functions):
         lambda_t = lambda_t.reshape(1, 1, self.channels)
         needles = needles * lambda_t
 
-        needles = torch.matmul(self.V_small, needles.reshape(-1, self.channels, 1)).reshape(vec.shape[0], -1, self.channels)
+        v_small = self.V_small.to(dtype=needles.dtype, device=needles.device)
+        needles = torch.matmul(v_small, needles.reshape(-1, self.channels, 1)).reshape(vec.shape[0], -1, self.channels)
 
         recon = needles.permute(0, 2, 1).reshape(vec.shape[0], -1)
         return recon
@@ -869,10 +881,11 @@ class Colorization(A_functions):
         needles_vec = needles_vec * d1_t
         needles_epsilon = needles_epsilon * d2_t
 
-        needles_vec = torch.matmul(self.V_small, needles_vec.reshape(-1, self.channels, 1)).reshape(vec.shape[0], -1, self.channels)
+        v_small = self.V_small.to(dtype=needles_vec.dtype, device=needles_vec.device)
+        needles_vec = torch.matmul(v_small, needles_vec.reshape(-1, self.channels, 1)).reshape(vec.shape[0], -1, self.channels)
         recon_vec = needles_vec.permute(0, 2, 1).reshape(vec.shape[0], -1)
 
-        needles_epsilon = torch.matmul(self.V_small, needles_epsilon.reshape(-1, self.channels, 1)).reshape(vec.shape[0], -1,self.channels)
+        needles_epsilon = torch.matmul(v_small, needles_epsilon.reshape(-1, self.channels, 1)).reshape(vec.shape[0], -1,self.channels)
         recon_epsilon = needles_epsilon.permute(0, 2, 1).reshape(vec.shape[0], -1)
 
         return recon_vec + recon_epsilon
@@ -992,10 +1005,12 @@ class WalshAadamardCS(A_functions):
 #Convolution-based super-resolution
 class SRConv(A_functions):
     def mat_by_img(self, M, v, dim):
+        M = M.to(dtype=v.dtype, device=v.device)
         return torch.matmul(M, v.reshape(v.shape[0] * self.channels, dim,
                         dim)).reshape(v.shape[0], self.channels, M.shape[0], dim)
 
     def img_by_mat(self, v, M, dim):
+        M = M.to(dtype=v.dtype, device=v.device)
         return torch.matmul(v.reshape(v.shape[0] * self.channels, dim,
                         dim), M).reshape(v.shape[0], self.channels, dim, M.shape[1])
 
@@ -1075,10 +1090,12 @@ class SRConv(A_functions):
 #Deblurring
 class Deblurring(A_functions):
     def mat_by_img(self, M, v):
+        M = M.to(dtype=v.dtype, device=v.device)
         return torch.matmul(M, v.reshape(v.shape[0] * self.channels, self.img_dim,
                         self.img_dim)).reshape(v.shape[0], self.channels, M.shape[0], self.img_dim)
 
     def img_by_mat(self, v, M):
+        M = M.to(dtype=v.dtype, device=v.device)
         return torch.matmul(v.reshape(v.shape[0] * self.channels, self.img_dim,
                         self.img_dim), M).reshape(v.shape[0], self.channels, self.img_dim, M.shape[1])
 
@@ -1235,10 +1252,12 @@ class Deblurring(A_functions):
 #Anisotropic Deblurring
 class Deblurring2D(A_functions):
     def mat_by_img(self, M, v):
+        M = M.to(dtype=v.dtype, device=v.device)
         return torch.matmul(M, v.reshape(v.shape[0] * self.channels, self.img_dim,
                         self.img_dim)).reshape(v.shape[0], self.channels, M.shape[0], self.img_dim)
 
     def img_by_mat(self, v, M):
+        M = M.to(dtype=v.dtype, device=v.device)
         return torch.matmul(v.reshape(v.shape[0] * self.channels, self.img_dim,
                         self.img_dim), M).reshape(v.shape[0], self.channels, self.img_dim, M.shape[1])
 

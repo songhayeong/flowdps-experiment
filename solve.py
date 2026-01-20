@@ -82,8 +82,9 @@ def run(args):
         prompt_embs = [[x, y] for x, y in zip(prompt_emb_set, pooled_emb_set)]
         null_embs = [null_emb, null_pooled_emb]
     else:
-        prompt_embs = [[None, None]] * len(prompts)
-        null_embs = [None, None]
+        # Let the sampler encode prompts on demand.
+        prompt_embs = [None] * len(prompts)
+        null_embs = None
 
     print("Prompts are processed.")
 

@@ -1,4 +1,5 @@
 import numpy as np
+from pathlib import Path
 import torch
 from munch import Munch
 
@@ -44,10 +45,21 @@ def deg_cs_blockbased(deg_config, device):
 
 @register_degradation(name='inpainting')
 def deg_inpainting(deg_config, device):
-    # TODO: generate mask rather than load
-    loaded = np.load("exp/inp_masks/mask_768_half.npy")  # block
-    # loaded = np.load("lip_mask_4.npy")
-    mask = torch.from_numpy(loaded).to(device).reshape(-1)
+    # Prefer fixed mask file if present; otherwise generate a deterministic center box mask.
+    mask_path = Path("exp/inp_masks/mask_768_half.npy")
+    if mask_path.is_file():
+        loaded = np.load(mask_path)  # block
+        mask = torch.from_numpy(loaded).to(device).reshape(-1)
+    else:
+        img_size = int(deg_config.image_size)
+        box_ratio = 0.30
+        box_h = int(round(img_size * box_ratio))
+        box_w = int(round(img_size * box_ratio))
+        top = (img_size - box_h) // 2
+        left = (img_size - box_w) // 2
+        mask_img = torch.ones((img_size, img_size), device=device)
+        mask_img[top : top + box_h, left : left + box_w] = 0
+        mask = mask_img.reshape(-1)
     missing_r = torch.nonzero(mask == 0).long().reshape(-1) * 3
     missing_g = missing_r + 1
     missing_b = missing_g + 1

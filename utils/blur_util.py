@@ -20,6 +20,8 @@ class Blurkernel(nn.Module):
         self.weights_init()
 
     def forward(self, x):
+        if self.seq[1].weight.dtype != x.dtype:
+            self.seq = self.seq.to(dtype=x.dtype)
         return self.seq(x)
 
     def weights_init(self):
@@ -41,6 +43,7 @@ class Blurkernel(nn.Module):
     def update_weights(self, k):
         if not torch.is_tensor(k):
             k = torch.from_numpy(k).to(self.device)
+        k = k.to(dtype=self.seq[1].weight.dtype, device=self.device)
         for name, f in self.named_parameters():
             f.data.copy_(k)
 

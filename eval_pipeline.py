@@ -31,6 +31,11 @@ TASK_SPECS = {
     "sr_avgpool_gen": 12,
 }
 
+# Some tasks require specific image sizes (e.g., Walsh-Hadamard needs power-of-two).
+TASK_IMG_SIZE_OVERRIDES = {
+    "cs_walshhadamard": 512,
+}
+
 
 def _list_images(root: Path) -> list[Path]:
     """Return sorted image files (png/jpg/jpeg) from a directory."""
@@ -289,10 +294,26 @@ def main():
         images_dir = task_dir / "images"
         workdir = task_dir / "workdir"
 
+        if task == "deblur_nonuniform":
+            masks_path = Path("functions/nonuniform/masks/000001.npy")
+            kernels_path = Path("functions/nonuniform/kernels/000001.npy")
+            if not masks_path.is_file() or not kernels_path.is_file():
+                print("Skip deblur_nonuniform: missing nonuniform masks/kernels")
+                continue
+
         if images_dir.exists() and any(images_dir.iterdir()) and not args.overwrite:
-            raise FileExistsError(f"{images_dir} already has files. Use --overwrite to continue.")
+            print(f"Skip {task}: {images_dir} already has files. Use --overwrite to re-run.")
+            continue
         images_dir.mkdir(parents=True, exist_ok=True)
         workdir.mkdir(parents=True, exist_ok=True)
+
+        # Use per-task image size if required.
+        task_img_size = TASK_IMG_SIZE_OVERRIDES.get(task, args.img_size)
+        task_imgH = args.imgH
+        task_imgW = args.imgW
+        if task == "sr_avgpool_gen":
+            task_imgH = task_img_size
+            task_imgW = task_img_size
 
         # Use multiple samples only for tasks explicitly marked stochastic.
         num_samples = args.samples_per_image if task in args.stochastic_tasks else 1
@@ -319,9 +340,9 @@ def main():
                 noise_std=args.noise_std,
                 prompt=args.prompt,
                 method=args.method,
-                img_size=args.img_size,
-                imgH=args.imgH,
-                imgW=args.imgW,
+                img_size=task_img_size,
+                imgH=task_imgH,
+                imgW=task_imgW,
                 efficient_memory=args.efficient_memory,
             )
 
@@ -349,6 +370,7 @@ def main():
                 "noise_std": args.noise_std,
                 "method": args.method,
                 "prompt": args.prompt,
+                "img_size": task_img_size,
             }
         )
 
